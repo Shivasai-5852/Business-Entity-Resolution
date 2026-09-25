@@ -1,0 +1,170 @@
+================================================================================
+AMAZON ML HACKATHON: BUSINESS ENTITY RESOLUTION CHALLENGE
+STAGE 4: CANDIDATE BLOCKING & GENERATION VALIDATION REPORT
+================================================================================
+Generated at:            2026-09-25 15:38:56
+Target Corpus Evaluated: 100% OF COMPLETE SOURCE 2 & SOURCE 3 (NOT DOWNSAMPLED)
+  * Source 2 Records:    5,031,104 records indexed (100.0% coverage)
+  * Source 3 Records:    5,289,842 records indexed (100.0% coverage)
+  * Evaluated S1 Queries: 5,000 Source 1 query entities
+  * Total Ground Truth:  17,250 true match relationships
+Evaluation Runtime:      4445.6s (74.09 minutes)
+Peak Working Set Memory: 1293.0 MB (well within 8 GB RAM budget)
+
+--------------------------------------------------------------------------------
+1. AUDIT FINDINGS: INITIAL VS FULL-CORPUS EVALUATION
+--------------------------------------------------------------------------------
+Audit Question 1: Were all true ground-truth matches included in initial evaluation?
+  Finding: No. The initial evaluation used a 5,000 entity sample (17,250 true matches out
+  of 7,638,365 in ground truth). Over 99.7% of ground truth was unexamined.
+
+Audit Question 2: Were the complete Source 2 and Source 3 datasets indexed?
+  Finding: CRITICAL GAP DISCOVERED. In the initial evaluation, the target corpus was
+  downsampled to ~158,000 entities (~3.1% of S2 and ~3.0% of S3) because the loop stopped
+  after loading true match targets + 150k background rows. Over 96.8% of distractor records
+  were omitted, which masked candidate collisions and inflated recall measurements.
+  Resolution: In this validation pass, 100% of all 5,031,104 Source 2 records and all
+  5,289,842 Source 3 records were indexed using country partitioning and single-pass pruning.
+
+Audit Question 3: Was candidate recall calculated correctly?
+  Finding: The mathematical formula (retrieved / total) was correct, but evaluated against
+  an incomplete distractor pool. True full-corpus recall is reported below.
+
+Audit Question 4: Did candidate counts include raw or only truncated candidates?
+  Finding: Previous candidate statistics reported ONLY capped candidates. Raw candidate counts
+  before truncation and true matches lost specifically to caps were not reported.
+  Resolution: Both before-cap (raw) and after-cap distributions, plus exact losses to cap,
+  are now explicitly measured and reported.
+
+Audit Question 5: Was the evaluation sample representative?
+  Finding: Sequential head(5000) was vulnerable to crawl order bias. The current pass evaluates
+  stratified country partitions (US: ~60%, India: ~40%) matching true population proportions.
+
+Audit Question 6: Can candidate ranking and truncation remove true matches?
+  Finding: Yes. When candidate blocks exceed max_candidates, lower-priority candidates are
+  truncated. Ranking was enhanced with multi-tier tie-breaking and expanded query tokens.
+
+--------------------------------------------------------------------------------
+2. FULL-CORPUS CANDIDATE RECALL & CAP COMPARISON (5.03M S2 / 5.29M S3 INDEXED)
+--------------------------------------------------------------------------------
+SOURCE 2 FULL-CORPUS RECALL (5,031,104 Target Records):
+Cap Setting  Recall (%)   Retrieved / Total    Lost to Cap    Lost to Block  Avg Capped   Avg Raw    Med    P95   
+----------------------------------------------------------------------------------------------------------
+Cap 30        72.00%     5,939 / 8,249        1,011          1,299          25.2         136.6      30     30    
+Cap 50        75.90%     6,261 / 8,249        689            1,299          39.4         136.6      50     50    
+Cap 75        78.47%     6,473 / 8,249        477            1,299          55.1         136.6      75     75    
+Cap 100       80.29%     6,623 / 8,249        327            1,299          68.6         136.6      95     100   
+
+SOURCE 3 FULL-CORPUS RECALL (5,289,842 Target Records):
+Cap Setting  Recall (%)   Retrieved / Total    Lost to Cap    Lost to Block  Avg Capped   Avg Raw    Med    P95   
+----------------------------------------------------------------------------------------------------------
+Cap 30        68.66%     6,180 / 9,001        1,339          1,482          25.2         141.3      30     30    
+Cap 50        73.77%     6,640 / 9,001        879            1,482          39.7         141.3      50     50    
+Cap 75        77.05%     6,935 / 9,001        584            1,482          55.5         141.3      75     75    
+Cap 100       79.11%     7,121 / 9,001        398            1,482          69.0         141.3      94     100   
+
+--------------------------------------------------------------------------------
+COMBINED (SOURCE 2 + SOURCE 3) PERFORMANCE SUMMARY:
+  * Total Ground Truth Match Relationships: 17,250
+  * Recommended Default [Cap 50]:
+      - Candidate Recall:               74.79% (12,901 / 17,250)
+      - Average Candidates per S1:      79.2 (Target <= 100 combined; comfortably met)
+      - Losses to Cap:                  1,568
+      - Losses to Blocking:             2,781
+  * High-Recall Alternative [Cap 75]:
+      - Candidate Recall:               77.73% (13,408 / 17,250)
+      - Average Candidates per S1:      110.6
+      - Additional Matches Recovered:   +507
+
+--------------------------------------------------------------------------------
+3. CANDIDATE GENERATION IMPROVEMENTS & MECHANICS
+--------------------------------------------------------------------------------
+1. Single-Pass Streaming In-Flight Pruning:
+   - Dynamically deletes inverted lists and records high-frequency tokens into hash sets
+     as soon as block size exceeds max_name_df (400) or max_addr_df (150).
+   - Eliminates multi-gigabyte record buffers; enables indexing 5.03M records with < 1.7 GB RAM.
+2. Numeric Address Token Matching:
+   - Inverted index now extracts numeric tokens (len >= 2) such as street/plot numbers
+     ('729', '314', '206', '11', '79').
+   - Crucial bridge for cross-script Indian entities where the business name is written in an
+     Indic script (Kannada, Hindi, Tamil) in S2/S3 but in English in S1, yet the building/plot
+     numbers are identical in Arabic numerals.
+3. Query Token Expansion:
+   - Increased max_tokens_to_query from 2 to 3 for both name and address tokens.
+   - Recovers entities with 3-token names where one token has a typo or corporate variation.
+4. Multi-Tier Deterministic Tie-Breaking:
+   - Ties among equal-scoring candidates are broken by pass diversity, presence of exact name,
+     presence of name token, and stable entity ID ordering, avoiding random truncation.
+
+--------------------------------------------------------------------------------
+4. INCREMENTAL RECALL CONTRIBUTION PER BLOCKING PASS (SOURCE 2 US PARTITION)
+--------------------------------------------------------------------------------
+Pass Step                Cumulative Recall    Incremental Gain   Avg Cands/Entity  
+--------------------------------------------------------------------------------
+exact_name_only           46.99%             +46.99%            9.3               
++exact_conservative       47.68%             + 0.69%            9.8               
++name_tokens              59.48%             +11.80%            24.8              
++addr_tokens              72.27%             +12.79%            34.7              
++prefix_ngram (all)       75.51%             + 3.24%            37.6              
+
+--------------------------------------------------------------------------------
+5. RECALL BY COUNTRY & CARDINALITY BREAKDOWN (CAP 50)
+--------------------------------------------------------------------------------
+Source 2 Country Recall:
+  * [US   ]: 3,722 / 4,929 matches retrieved (75.51% recall) | Lost to Cap: 496
+  * [India]: 2,539 / 3,320 matches retrieved (76.48% recall) | Lost to Cap: 193
+
+Source 3 Country Recall:
+  * [US   ]: 3,848 / 5,283 matches retrieved (72.84% recall) | Lost to Cap: 563
+  * [India]: 2,792 / 3,718 matches retrieved (75.09% recall) | Lost to Cap: 316
+
+Cardinality Breakdown (Source 2, Cap 50):
+  * Entities with  1 true match(es): 1,420 / 1,907 (74.46% recall)
+  * Entities with  2 true match(es): 2,191 / 2,850 (76.88% recall)
+  * Entities with  3 true match(es): 1,726 / 2,238 (77.12% recall)
+  * Entities with  4 true match(es): 766 / 1,044 (73.37% recall)
+  * Entities with  5 true match(es): 158 / 210 (75.24% recall)
+
+--------------------------------------------------------------------------------
+6. REGRESSION TEST SUITE VERIFICATION
+--------------------------------------------------------------------------------
+Test Suite: src/test_candidate_generation.py (16 unit tests)
+  [PASS] test_exact_normalized_name_match
+  [PASS] test_distinctive_token_match
+  [PASS] test_character_prefix_match
+  [PASS] test_address_based_cross_lingual_match
+  [PASS] test_empty_address_safety (empty address never produces address keys)
+  [PASS] test_empty_business_name_safety
+  [PASS] test_different_country_partitions (strict country boundary isolation)
+  [PASS] test_french_accented_names (accents normalized seamlessly)
+  [PASS] test_devanagari_names (native script preserved without corruption)
+  [PASS] test_duplicate_removal_and_provenance (provenance tracked across passes)
+  [PASS] test_deterministic_output (reproducible ordering across invocations)
+  [PASS] test_candidate_caps (strict candidate limit enforcement)
+  [PASS] test_ground_truth_recall_calculation
+  [PASS] test_numeric_address_token_match (numeric token bridging)
+  [PASS] test_dynamic_in_flight_pruning (oversized block dynamic pruning)
+  [PASS] test_cap_loss_breakdown (accurate attribution between blocking and cap losses)
+Result: 16/16 tests PASSED in 0.011s.
+
+--------------------------------------------------------------------------------
+7. RECOMMENDATIONS FOR STAGE 5 (PAIRWISE FEATURE ENGINEERING & MODELING)
+--------------------------------------------------------------------------------
+1. Candidate Cap Recommendation: Adopt Cap 50 as default (39.5 avg cands/source, 74.79% combined full-corpus recall,
+   79.2 combined cands/S1 entity, comfortably satisfying the <= 100 candidates target).
+   If pairwise feature extraction allows higher throughput, Cap 75 provides 77.73% combined recall with
+   110.6 combined cands/S1 entity, recovering +507 additional true matches. Cap 100 achieves 79.70% recall.
+
+2. Feature Extraction Design:
+   - Name String Similarities: RapidFuzz token_sort_ratio, token_set_ratio, partial_ratio,
+     Levenshtein ratio on normalized core names and conservative names.
+   - Address Similarities: Token Jaccard, numeric house/street number exact overlap ratio,
+     and binary indicator for missing address.
+   - Legal Suffix Features: Agreement / conflict of corporate designators (Inc, LLC, Pvt Ltd, Sarl).
+   - Candidate Provenance Features: Binary indicators for blocking passes (exact_name, name_token,
+     addr_token, prefix_6gram).
+3. Metric Optimization for Competition F0.5 Metric:
+   - In F0.5, precision is weighted twice as heavily as recall (beta = 0.5).
+   - Classification thresholds must be calibrated to maximize precision (target >= 88-92% precision).
+   - Reject ambiguous candidate pairs where score is near threshold to protect precision score.
+================================================================================
